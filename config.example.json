@@ -1,0 +1,15 @@
+{
+  "vaultPath": "",
+  "defaults": {
+    "inProgressFolder": "In Progress",
+    "searchFolders": [
+      "In Progress",
+      "Ready to Tests - 1.1 - in QA",
+      "Ready to Tests - 1.2 - Approved in QA",
+      "Ready to Tests - 1.3 - in STG"
+    ],
+    "ticketPattern": "[A-Z][A-Z0-9]+-\\d+",
+    "jiraBaseUrl": "https://your.atlassian.net/browse"
+  },
+  "projects": {}
+}

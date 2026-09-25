@@ -1,0 +1,25 @@
+#!/bin/sh
+# Installed by obsidian-sync enable — never commit this; lives in .git/hooks
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+SYNC="${OBSIDIAN_STORY_SYNC:-$HOME/.obsidian-story-sync/bin/obsidian-sync.mjs}"
+ENV_FILE="${OBSIDIAN_STORY_ENV:-$HOME/.obsidian-story-sync/env}"
+
+# Load machine-local env (vault path, etc.) without sourcing full shell profiles
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
+
+# Ensure common user bin paths for GUI Git clients
+export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+if [ ! -f "$SYNC" ]; then
+  exit 0
+fi
+
+# Never block commits if sync fails
+node "$SYNC" commit --cwd "$REPO_ROOT" >/dev/null 2>&1 || true
+exit 0
