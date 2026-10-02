@@ -11,7 +11,7 @@
  *   obsidian-sync projects
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,6 +97,38 @@ function resolveCwd(args) {
   return process.cwd();
 }
 
+const WINDOWS_ABS_PATH = /^[A-Za-z]:[\\/]/;
+
+function isWindowsAbsolute(value) {
+  return WINDOWS_ABS_PATH.test(value);
+}
+
+/**
+ * Obsidian on Windows reports C:\.... On WSL that string is not absolute,
+ * so path.resolve() would append it to the repo cwd.
+ */
+function windowsPathToPosix(windowsPath) {
+  try {
+    return execFileSync('wslpath', ['-u', windowsPath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    const match = windowsPath.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (!match) return windowsPath;
+    const rest = match[2].replace(/\\/g, '/').replace(/^\/+/, '');
+    return `/mnt/${match[1].toLowerCase()}/${rest}`;
+  }
+}
+
+function resolveVaultPath(vaultPath) {
+  const raw = String(vaultPath).trim();
+  if (process.platform !== 'win32' && isWindowsAbsolute(raw)) {
+    return path.resolve(windowsPathToPosix(raw));
+  }
+  return path.resolve(raw);
+}
+
 function getGitRoot(cwd) {
   try {
     return run('git rev-parse --show-toplevel', { cwd });
@@ -147,7 +179,11 @@ function ensureGitignore(gitRoot, entry) {
   const current = fs.readFileSync(gi, 'utf8');
   if (current.split(/\r?\n/).some((line) => line.trim() === entry)) return;
   const suffix = current.endsWith('\n') ? '' : '\n';
-  fs.appendFileSync(gi, `${suffix}\n# Local Obsidian story sync binding\n${entry}\n`, 'utf8');
+  fs.appendFileSync(
+    gi,
+    `${suffix}\n# Local Obsidian story sync binding\n${entry}\n`,
+    'utf8',
+  );
 }
 
 function env(name) {
@@ -168,7 +204,8 @@ function firstDefined(...values) {
 
 function parseSearchFolders(value) {
   if (!value) return undefined;
-  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (Array.isArray(value))
+    return value.map((item) => String(item).trim()).filter(Boolean);
   return String(value)
     .split(',')
     .map((item) => item.trim())
@@ -186,9 +223,17 @@ function resolveOverrides(args = {}) {
   return {
     vaultPath: firstDefined(args.vault, env('OBSIDIAN_VAULT_PATH')),
     projectRoot: firstDefined(args.root, env('OBSIDIAN_PROJECT_ROOT')),
-    inProgressFolder: firstDefined(args['in-progress-folder'], env('OBSIDIAN_IN_PROGRESS_FOLDER')),
-    searchFolders: parseSearchFolders(firstDefined(args['search-folders'], env('OBSIDIAN_SEARCH_FOLDERS'))),
-    ticketPattern: firstDefined(args['ticket-pattern'], env('OBSIDIAN_TICKET_PATTERN')),
+    inProgressFolder: firstDefined(
+      args['in-progress-folder'],
+      env('OBSIDIAN_IN_PROGRESS_FOLDER'),
+    ),
+    searchFolders: parseSearchFolders(
+      firstDefined(args['search-folders'], env('OBSIDIAN_SEARCH_FOLDERS')),
+    ),
+    ticketPattern: firstDefined(
+      args['ticket-pattern'],
+      env('OBSIDIAN_TICKET_PATTERN'),
+    ),
     jiraBaseUrl: firstDefined(args['jira-base'], env('OBSIDIAN_JIRA_BASE_URL')),
   };
 }
@@ -196,7 +241,11 @@ function resolveOverrides(args = {}) {
 function matchProject(raw, cwd, gitRoot) {
   const binding = readBinding(gitRoot);
   if (binding?.project && raw.projects?.[binding.project]) {
-    return { name: binding.project, project: raw.projects[binding.project], source: 'binding' };
+    return {
+      name: binding.project,
+      project: raw.projects[binding.project],
+      source: 'binding',
+    };
   }
 
   const remotes = getGitRemotes(cwd);
@@ -232,27 +281,34 @@ function mergeProjectConfig(raw, matched, args = {}) {
   }
 
   return {
-    vaultPath: path.resolve(String(vaultPath)),
+    vaultPath: resolveVaultPath(vaultPath),
     projectName: matched?.name || null,
-    projectRoot: firstDefined(overrides.projectRoot, project.projectRoot, matched?.name),
+    projectRoot: firstDefined(
+      overrides.projectRoot,
+      project.projectRoot,
+      matched?.name,
+    ),
     inProgressFolder: firstDefined(
       overrides.inProgressFolder,
       project.inProgressFolder,
       defaults.inProgressFolder,
       'In Progress',
     ),
-    searchFolders:
-      overrides.searchFolders ||
+    searchFolders: overrides.searchFolders ||
       project.searchFolders ||
-      defaults.searchFolders ||
-      ['In Progress'],
+      defaults.searchFolders || ['In Progress'],
     ticketPattern: firstDefined(
       overrides.ticketPattern,
       project.ticketPattern,
       defaults.ticketPattern,
       '[A-Z][A-Z0-9]+-\\d+',
     ),
-    jiraBaseUrl: firstDefined(overrides.jiraBaseUrl, project.jiraBaseUrl, defaults.jiraBaseUrl, ''),
+    jiraBaseUrl: firstDefined(
+      overrides.jiraBaseUrl,
+      project.jiraBaseUrl,
+      defaults.jiraBaseUrl,
+      '',
+    ),
     overrides,
   };
 }
@@ -315,7 +371,11 @@ function listStoryFiles(config) {
 
 function findStoryByTicket(config, ticket) {
   const needle = ticket.toUpperCase();
-  return listStoryFiles(config).find((file) => file.name.toUpperCase().includes(needle)) ?? null;
+  return (
+    listStoryFiles(config).find((file) =>
+      file.name.toUpperCase().includes(needle),
+    ) ?? null
+  );
 }
 
 function formatFilenameDate(date = new Date()) {
@@ -371,21 +431,29 @@ function appendCommitEntry(content, { dateHeading, lines }) {
   const before = next.slice(0, otherIdx);
   let after = next.slice(otherIdx);
   const block = lines.join('\n');
-  const headingPattern = new RegExp(`^####\\s+${escapeRegExp(dateHeading)}\\s*$`, 'm');
+  const headingPattern = new RegExp(
+    `^####\\s+${escapeRegExp(dateHeading)}\\s*$`,
+    'm',
+  );
 
   if (headingPattern.test(after)) {
     const sectionStart = after.search(headingPattern);
     const rest = after.slice(sectionStart);
     const nextHeadingRel = rest.slice(1).search(/^####\s+/m);
-    const sectionEnd = nextHeadingRel === -1 ? after.length : sectionStart + 1 + nextHeadingRel;
+    const sectionEnd =
+      nextHeadingRel === -1 ? after.length : sectionStart + 1 + nextHeadingRel;
     const section = after.slice(sectionStart, sectionEnd);
     const hasCommits = /Commit:\s*`/.test(section);
     const separator = hasCommits ? '\n\n' : '\n';
     const updatedSection = `${section.replace(/\s*$/, '')}${separator}${block}\n`;
-    after = after.slice(0, sectionStart) + updatedSection + after.slice(sectionEnd);
+    after =
+      after.slice(0, sectionStart) + updatedSection + after.slice(sectionEnd);
   } else {
     const insert = `\n#### ${dateHeading}\n${block}\n`;
-    after = after.replace(/###\s*Other Commits\s*/i, (match) => `${match}${insert}`);
+    after = after.replace(
+      /###\s*Other Commits\s*/i,
+      (match) => `${match}${insert}`,
+    );
   }
 
   return `${before}${after}`.replace(/\n{3,}/g, '\n\n');
@@ -401,7 +469,14 @@ function getCommitInfo(cwd, hash = 'HEAD') {
 }
 
 function resolveMergeBase(cwd) {
-  const candidates = ['origin/dev', 'dev', 'origin/main', 'main', 'origin/master', 'master'];
+  const candidates = [
+    'origin/dev',
+    'dev',
+    'origin/main',
+    'main',
+    'origin/master',
+    'master',
+  ];
   for (const candidate of candidates) {
     try {
       return run(`git merge-base HEAD ${candidate}`, { cwd });
@@ -424,7 +499,9 @@ function getBranchCommitsSinceBase(cwd) {
 }
 
 function isCommitLogged(content, commit) {
-  return content.includes(commit.full) || content.includes(`\`${commit.short}\``);
+  return (
+    content.includes(commit.full) || content.includes(`\`${commit.short}\``)
+  );
 }
 
 function logCommitToStory(storyPath, commit, branch) {
@@ -436,11 +513,20 @@ function logCommitToStory(storyPath, commit, branch) {
     `Branch: \`${branch}\``,
     `- ${commit.subject}`,
   ];
-  fs.writeFileSync(storyPath, appendCommitEntry(current, { dateHeading, lines }), 'utf8');
+  fs.writeFileSync(
+    storyPath,
+    appendCommitEntry(current, { dateHeading, lines }),
+    'utf8',
+  );
   return true;
 }
 
 function ensureProjectFolders(config, create) {
+  if (!fs.existsSync(config.vaultPath)) {
+    throw new Error(
+      `Vault path does not exist: ${config.vaultPath}\nCheck OBSIDIAN_VAULT_PATH in ~/.obsidian-story-sync/env`,
+    );
+  }
   const root = path.join(config.vaultPath, config.projectRoot);
   if (!fs.existsSync(root)) {
     if (!create) {
@@ -460,17 +546,24 @@ function ensureProjectFolders(config, create) {
 
 function cmdProjects(raw, args = {}) {
   const overrides = resolveOverrides(args);
-  const vaultPath = firstDefined(overrides.vaultPath, raw.vaultPath) || '(missing)';
-  console.log(`Vault: ${vaultPath}${overrides.vaultPath ? ' (env/flag)' : ' (config.json)'}`);
+  const vaultPath =
+    firstDefined(overrides.vaultPath, raw.vaultPath) || '(missing)';
+  console.log(
+    `Vault: ${vaultPath}${overrides.vaultPath ? ' (env/flag)' : ' (config.json)'}`,
+  );
   console.log('Projects:');
   for (const [name, project] of Object.entries(raw.projects || {})) {
     console.log(`- ${name}`);
-    console.log(`    root: ${firstDefined(overrides.projectRoot, project.projectRoot, name)}`);
+    console.log(
+      `    root: ${firstDefined(overrides.projectRoot, project.projectRoot, name)}`,
+    );
     console.log(
       `    ticket: ${firstDefined(overrides.ticketPattern, project.ticketPattern, raw.defaults?.ticketPattern)}`,
     );
-    if (project.match?.paths?.length) console.log(`    paths: ${project.match.paths.join(', ')}`);
-    if (project.match?.remotes?.length) console.log(`    remotes: ${project.match.remotes.join(', ')}`);
+    if (project.match?.paths?.length)
+      console.log(`    paths: ${project.match.paths.join(', ')}`);
+    if (project.match?.remotes?.length)
+      console.log(`    remotes: ${project.match.remotes.join(', ')}`);
   }
 }
 
@@ -497,7 +590,9 @@ function cmdEnable(raw, args) {
       ticketPattern: args['ticket-pattern']
         ? String(args['ticket-pattern'])
         : raw.defaults?.ticketPattern,
-      jiraBaseUrl: args['jira-base'] ? String(args['jira-base']) : raw.defaults?.jiraBaseUrl,
+      jiraBaseUrl: args['jira-base']
+        ? String(args['jira-base'])
+        : raw.defaults?.jiraBaseUrl,
       match: {
         paths: [gitRoot.endsWith(path.sep) ? gitRoot : `${gitRoot}${path.sep}`],
       },
@@ -509,14 +604,26 @@ function cmdEnable(raw, args) {
     const project = raw.projects[projectName];
     project.match = project.match || {};
     project.match.paths = project.match.paths || [];
-    const needle = gitRoot.endsWith(path.sep) ? gitRoot : `${gitRoot}${path.sep}`;
-    if (!project.match.paths.some((p) => path.resolve(p) === path.resolve(needle) || path.resolve(p) === path.resolve(gitRoot))) {
+    const needle = gitRoot.endsWith(path.sep)
+      ? gitRoot
+      : `${gitRoot}${path.sep}`;
+    if (
+      !project.match.paths.some(
+        (p) =>
+          path.resolve(p) === path.resolve(needle) ||
+          path.resolve(p) === path.resolve(gitRoot),
+      )
+    ) {
       project.match.paths.push(needle);
       saveRawConfig(raw);
     }
   }
 
-  const config = mergeProjectConfig(raw, { name: projectName, project: raw.projects[projectName] }, args);
+  const config = mergeProjectConfig(
+    raw,
+    { name: projectName, project: raw.projects[projectName] },
+    args,
+  );
   ensureProjectFolders(config, Boolean(args['create-folders']));
 
   writeBinding(gitRoot, {
@@ -548,11 +655,16 @@ function cmdDisable(args) {
   const hookDest = path.join(gitRoot, '.git', 'hooks', 'post-commit');
   if (fs.existsSync(hookDest)) {
     const content = fs.readFileSync(hookDest, 'utf8');
-    if (content.includes('obsidian-sync') || content.includes('OBSIDIAN_STORY_SYNC')) {
+    if (
+      content.includes('obsidian-sync') ||
+      content.includes('OBSIDIAN_STORY_SYNC')
+    ) {
       fs.unlinkSync(hookDest);
       console.log(`REMOVED\t${hookDest}`);
     } else {
-      console.log(`SKIP\tExisting post-commit hook left untouched: ${hookDest}`);
+      console.log(
+        `SKIP\tExisting post-commit hook left untouched: ${hookDest}`,
+      );
     }
   }
 
@@ -566,7 +678,9 @@ function cmdStart(config, args) {
     extractTicket(getGitBranch(config.cwd), config);
 
   if (!ticket) {
-    throw new Error('Missing ticket. Pass --ticket KEY-123 (or include it in --title / branch).');
+    throw new Error(
+      'Missing ticket. Pass --ticket KEY-123 (or include it in --title / branch).',
+    );
   }
 
   const existing = findStoryByTicket(config, ticket);
@@ -579,10 +693,12 @@ function cmdStart(config, args) {
     throw new Error('Missing --title. Needed to create a new Obsidian note.');
   }
 
-  ensureProjectFolders(config, false);
+  ensureProjectFolders(config, true);
 
   const title = sanitizeTitle(String(args.title));
-  const branch = args.branch ? String(args.branch) : getGitBranch(config.cwd) || `feat/${ticket}`;
+  const branch = args.branch
+    ? String(args.branch)
+    : getGitBranch(config.cwd) || `feat/${ticket}`;
   const now = new Date();
   const filename = `${formatFilenameDate(now)} - ${ticket} - ${title}.md`;
   const dir = projectPath(config, config.inProgressFolder);
@@ -608,7 +724,10 @@ function cmdCommit(config, args) {
   const ticket =
     (args.ticket ? String(args.ticket).toUpperCase() : null) ||
     extractTicket(branch, config) ||
-    extractTicket(getCommitInfo(config.cwd, args.hash || 'HEAD').subject, config);
+    extractTicket(
+      getCommitInfo(config.cwd, args.hash || 'HEAD').subject,
+      config,
+    );
 
   if (!ticket) {
     console.log('SKIP\tNo ticket found in branch or commit message.');
@@ -669,11 +788,17 @@ function cmdFind(config, args) {
 function cmdStatus(config) {
   const vaultSource = config.overrides?.vaultPath ? 'env/flag' : 'config.json';
   console.log(`Vault:   ${config.vaultPath} (${vaultSource})`);
-  console.log(`Project: ${config.projectName} → ${config.projectRoot} (via ${config.matchSource})`);
+  if (!fs.existsSync(config.vaultPath)) {
+    console.log('WARNING  Vault path does not exist');
+  }
+  console.log(
+    `Project: ${config.projectName} → ${config.projectRoot} (via ${config.matchSource})`,
+  );
   for (const folder of config.searchFolders) {
     const dir = projectPath(config, folder);
     const count = fs.existsSync(dir)
-      ? fs.readdirSync(dir).filter((n) => n.endsWith('.md') && n !== 'TODO.md').length
+      ? fs.readdirSync(dir).filter((n) => n.endsWith('.md') && n !== 'TODO.md')
+          .length
       : 0;
     console.log(`- ${folder}: ${count} notes`);
   }
